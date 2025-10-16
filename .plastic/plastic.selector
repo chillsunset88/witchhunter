@@ -1,4 +1,0 @@
-repository "witchhunter/witchhunter@18966767272880@cloud"
-  path "/"
-    br "/main"
-    co "/main"
