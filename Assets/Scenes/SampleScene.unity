@@ -299,10 +299,28 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b08b84ce5bcd45140aaaaa1e2370cec8, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  horizontalAxis: Horizontal
+  verticalAxis: Vertical
+  jumpKey: 32
+  sprintKey: 304
+  sprintAltKey: 303
+  aimMouseButton: 1
+  referenceCamera: {fileID: 0}
+  enableMovement: 1
+  enableRotation: 1
+  enableSprint: 1
+  enableJump: 1
+  enableAim: 1
+  enableAnimatorUpdates: 1
+  cameraRelativeMovement: 1
+  configureRigidbody: 1
+  logAnimatorParametersOnAwake: 1
   h: 0
   v: 0
-  speed: 2.5
-  sprintMultiplier: 1.8
+  walkSpeed: 2.5
+  sprintSpeed: 8
+  animatorSmoothTime: 0.12
+  walkThreshold: 0.05
   jumpForce: 5
   aimRotationSpeed: 15
   distanceToGround: 0.1
@@ -312,12 +330,10 @@ MonoBehaviour:
   groundCheck: {fileID: 0}
   walkBool: walk
   altWalkBool: jalan
-  runBool: lari
+  runBool: sprint
   jumpBool: lompat
   speedFloat: Speed
   altSpeedFloat: speed
-  animatorSmoothTime: 0.12
-  walkThreshold: 0.05
 --- !u!1 &705507993
 GameObject:
   m_ObjectHideFlags: 0

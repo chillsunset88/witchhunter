@@ -1,37 +1,80 @@
 // using Unity.Mathematics;
 using UnityEngine;
+using UnityEngine.Serialization;
 
 [RequireComponent(typeof(Rigidbody))]
 public class PlayerMovement : MonoBehaviour
 {
-    [Header("Input")]
-    public float h;
-    public float v;
+    [HideInInspector] public string horizontalAxis = "Horizontal";
+    [HideInInspector] public string verticalAxis = "Vertical";
+    [HideInInspector] public KeyCode jumpKey = KeyCode.Space;
+    [HideInInspector] public KeyCode sprintKey = KeyCode.LeftShift;
+    [HideInInspector] public KeyCode sprintAltKey = KeyCode.RightShift;
+    [HideInInspector] public int aimMouseButton = 1;
+    [HideInInspector] public Camera referenceCamera;
 
-    [Header("Movement")]
-    public float speed = 2.0f;
-    [Tooltip("Multiplier applied to speed while sprinting.")]
-    public float sprintMultiplier = 1.8f;
-    [Tooltip("Impulse force applied to Rigidbody when jumping.")]
-    public float jumpForce = 5f;
-    [SerializeField] float aimRotationSpeed = 15f;
+    [HideInInspector] public bool enableMovement = true;
+    [HideInInspector] public bool enableRotation = true;
+    [HideInInspector] public bool enableSprint = true;
+    [HideInInspector] public bool enableJump = true;
+    [HideInInspector] public bool enableAim = true;
+    [HideInInspector] public bool enableAnimatorUpdates = true;
+    [HideInInspector] public bool cameraRelativeMovement = true;
+    [HideInInspector] public bool configureRigidbody = true;
+    [HideInInspector] public bool logAnimatorParametersOnAwake = true;
 
-    [Header("Ground")]
-    [Range(0f, 1.5f)] public float distanceToGround = 0.1f;
-    public LayerMask groundLayers;
-    public Transform groundCheck; // optional, set to foot pivot
+    [HideInInspector] public float h;
+    [HideInInspector] public float v;
 
-    [Header("Animator parameter names (case-sensitive)")]
-    public string walkBool = "walk";    // prefer this if exists
-    public string altWalkBool = "jalan";
-    public string runBool = "lari";
-    public string jumpBool = "lompat";
-    public string speedFloat = "Speed";
-    public string altSpeedFloat = "speed";
+    [Header("Tuning Movement")]
+    [FormerlySerializedAs("speed")]
+    [Tooltip("Speed applied when walking / not sprinting.")]
+    [SerializeField] float walkSpeed = 2.0f;
+    [FormerlySerializedAs("sprintMultiplier")]
+    [Tooltip("Speed applied while sprinting.")]
+    [SerializeField] float sprintSpeed = 3.6f;
+    [Tooltip("Smoothed response for animator speed parameters.")]
+    [SerializeField] float animatorSmoothTime = 0.12f;
+    [Tooltip("Minimum normalized speed that counts as walking.")]
+    [SerializeField] float walkThreshold = 0.05f;
 
-    [Header("Tuning")]
-    public float animatorSmoothTime = 0.12f;
-    public float walkThreshold = 0.05f;
+    [HideInInspector] public float jumpForce = 5f;
+    [HideInInspector] public float aimRotationSpeed = 15f;
+
+    [HideInInspector, Range(0f, 1.5f)] public float distanceToGround = 0.1f;
+    [HideInInspector] public LayerMask groundLayers = Physics.DefaultRaycastLayers;
+    [HideInInspector] public Transform groundCheck;
+
+    [HideInInspector] public string walkBool = "walk";
+    [HideInInspector] public string altWalkBool = "jalan";
+    [HideInInspector] public string runBool = "sprint";
+    [HideInInspector] public string jumpBool = "jump";
+    [HideInInspector] public string speedFloat = "Speed";
+    [HideInInspector] public string altSpeedFloat = "speed";
+
+    public float WalkSpeed
+    {
+        get => walkSpeed;
+        set => walkSpeed = Mathf.Max(0f, value);
+    }
+
+    public float SprintSpeed
+    {
+        get => sprintSpeed;
+        set => sprintSpeed = Mathf.Max(0f, value);
+    }
+
+    public float AnimatorSmoothTime
+    {
+        get => animatorSmoothTime;
+        set => animatorSmoothTime = Mathf.Max(0f, value);
+    }
+
+    public float WalkThreshold
+    {
+        get => walkThreshold;
+        set => walkThreshold = Mathf.Max(0f, value);
+    }
 
     Animator anim;
     Rigidbody rb;
@@ -51,7 +94,7 @@ public class PlayerMovement : MonoBehaviour
         rb = GetComponent<Rigidbody>();
         TryGetComponent(out bodyCollider);
 
-        if (rb != null)
+        if (rb != null && configureRigidbody)
         {
             rb.interpolation = RigidbodyInterpolation.Interpolate;
             rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
@@ -62,9 +105,12 @@ public class PlayerMovement : MonoBehaviour
         if (anim != null)
         {
             anim.applyRootMotion = false;
-            // debug info to help verify parameter names at runtime
-            Debug.Log($"Animator found: {anim.name} controller: {(anim.runtimeAnimatorController ? anim.runtimeAnimatorController.name : "null")}");
-            foreach (var p in anim.parameters) Debug.Log($"Animator param: {p.name} ({p.type})");
+            if (logAnimatorParametersOnAwake)
+            {
+                // debug info to help verify parameter names at runtime
+                Debug.Log($"Animator found: {anim.name} controller: {(anim.runtimeAnimatorController ? anim.runtimeAnimatorController.name : "null")}");
+                foreach (var p in anim.parameters) Debug.Log($"Animator param: {p.name} ({p.type})");
+            }
         }
 
         targetRotation = transform.rotation;
@@ -74,27 +120,33 @@ public class PlayerMovement : MonoBehaviour
     {
         isGrounded = CheckGrounded();
 
+        Camera cam = GetActiveCamera();
+
         // read input
-        h = Input.GetAxis("Horizontal");
-        v = Input.GetAxis("Vertical");
+        h = enableMovement && !string.IsNullOrEmpty(horizontalAxis) ? Input.GetAxis(horizontalAxis) : 0f;
+        v = enableMovement && !string.IsNullOrEmpty(verticalAxis) ? Input.GetAxis(verticalAxis) : 0f;
 
-        bool isAiming = Input.GetMouseButton(1);
-        if (anim != null && HasBoolParameter(anim, "aim")) anim.SetBool("aim", isAiming);
+        bool canAim = enableAim && aimMouseButton >= 0;
+        bool isAiming = canAim && Input.GetMouseButton(aimMouseButton);
+        if (enableAnimatorUpdates && anim != null && HasBoolParameter(anim, "aim")) anim.SetBool("aim", isAiming);
 
-        bool isMovingInput = !Mathf.Approximately(h, 0f) || !Mathf.Approximately(v, 0f);
+        bool isMovingInput = enableMovement && (!Mathf.Approximately(h, 0f) || !Mathf.Approximately(v, 0f));
 
         // rotation: free-turn to camera direction when moving & not aiming; slerp when aiming
-        if (!isAiming && isMovingInput && Camera.main != null)
+        if (enableRotation && !isAiming && isMovingInput)
         {
             Vector3 targetDirection = new Vector3(h, 0f, v);
-            targetDirection = Camera.main.transform.TransformDirection(targetDirection);
+            if (cameraRelativeMovement && cam != null)
+            {
+                targetDirection = cam.transform.TransformDirection(targetDirection);
+            }
             targetDirection.y = 0f;
             if (targetDirection.sqrMagnitude > 0.0001f)
                 targetRotation = Quaternion.LookRotation(targetDirection, Vector3.up);
         }
-        else if (isAiming && Camera.main != null)
+        else if (enableRotation && isAiming && cam != null)
         {
-            Vector3 aimDirection = Camera.main.transform.forward;
+            Vector3 aimDirection = cam.transform.forward;
             aimDirection.y = 0f;
             if (aimDirection.sqrMagnitude > 0.0001f)
                 targetRotation = Quaternion.Slerp(transform.rotation, Quaternion.LookRotation(aimDirection.normalized, Vector3.up), aimRotationSpeed * Time.deltaTime);
@@ -103,23 +155,31 @@ public class PlayerMovement : MonoBehaviour
         float currentSpeed = HandleSprint(isMovingInput);
 
         // movement relative to camera
-        Vector3 moveForward = Camera.main ? Vector3.ProjectOnPlane(Camera.main.transform.forward, Vector3.up).normalized : Vector3.forward;
-        Vector3 moveRight = Camera.main ? Vector3.ProjectOnPlane(Camera.main.transform.right, Vector3.up).normalized : Vector3.right;
-        Vector3 moveInput = (moveForward * v) + (moveRight * h);
+        Vector3 moveForward = Vector3.forward;
+        Vector3 moveRight = Vector3.right;
+        if (cameraRelativeMovement && cam != null)
+        {
+            moveForward = Vector3.ProjectOnPlane(cam.transform.forward, Vector3.up).normalized;
+            moveRight = Vector3.ProjectOnPlane(cam.transform.right, Vector3.up).normalized;
+        }
+        Vector3 moveInput = enableMovement ? (moveForward * v) + (moveRight * h) : Vector3.zero;
         if (moveInput.sqrMagnitude > 1f) moveInput.Normalize();
         desiredVelocity = moveInput * currentSpeed;
 
         // jump input (mark for FixedUpdate)
-        if (Input.GetKeyDown(KeyCode.Space) && isGrounded)
+        if (enableJump && isGrounded && jumpKey != KeyCode.None && Input.GetKeyDown(jumpKey))
         {
             jumpRequested = true;
-            SetBoolIfExists(anim, jumpBool, true);
-            // try trigger if they used a trigger instead
-            if (anim != null && HasTriggerParameter(anim, "Jump")) anim.SetTrigger("Jump");
+            if (enableAnimatorUpdates)
+            {
+                SetBoolIfExists(anim, jumpBool, true);
+                // try trigger if they used a trigger instead
+                if (anim != null && HasTriggerParameter(anim, "Jump")) anim.SetTrigger("Jump");
+            }
         }
 
         // reset jump bool when grounded and animation finished
-        if (isGrounded && !jumpRequested)
+        if (enableAnimatorUpdates && isGrounded && !jumpRequested)
         {
             SetBoolIfExists(anim, jumpBool, false);
         }
@@ -139,13 +199,13 @@ public class PlayerMovement : MonoBehaviour
         rb.velocity = nextVel;
 
         // apply rotation using physics-friendly MoveRotation
-        if (targetRotation != null)
+        if (enableRotation)
         {
             rb.MoveRotation(Quaternion.Slerp(rb.rotation, targetRotation, 10f * Time.fixedDeltaTime));
         }
 
         // jump impulse
-        if (jumpRequested)
+        if (enableJump && jumpRequested)
         {
             Vector3 vel = rb.velocity;
             vel.y = 0f;
@@ -158,23 +218,45 @@ public class PlayerMovement : MonoBehaviour
 
     float HandleSprint(bool isMoving)
     {
-        bool sprintKeyHeld = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+        float clampedWalk = Mathf.Max(0f, walkSpeed);
+        float clampedSprint = Mathf.Max(0f, sprintSpeed);
+
+        if (!enableSprint || (clampedSprint <= Mathf.Epsilon && clampedWalk <= Mathf.Epsilon))
+        {
+            isSprinting = false;
+            if (enableAnimatorUpdates)
+            {
+                bool wantsWalkOnly = isMoving;
+                SetBoolIfExists(anim, runBool, false);
+                SetBoolIfExists(anim, walkBool, wantsWalkOnly);
+                SetBoolIfExists(anim, altWalkBool, wantsWalkOnly);
+            }
+            return clampedWalk;
+        }
+
+        bool sprintKeyHeld = (sprintKey != KeyCode.None && Input.GetKey(sprintKey))
+                              || (sprintAltKey != KeyCode.None && Input.GetKey(sprintAltKey));
         isSprinting = isMoving && sprintKeyHeld;
         bool wantsWalk = isMoving && !isSprinting;
 
-        SetBoolIfExists(anim, runBool, isSprinting);
-        SetBoolIfExists(anim, walkBool, wantsWalk);
+        if (enableAnimatorUpdates)
+        {
+            SetBoolIfExists(anim, runBool, isSprinting);
+            SetBoolIfExists(anim, walkBool, wantsWalk);
+            SetBoolIfExists(anim, altWalkBool, wantsWalk);
+        }
 
-        return isSprinting ? speed * sprintMultiplier : speed;
+        return isSprinting ? clampedSprint : clampedWalk;
     }
 
     void UpdateAnimatorParameters()
     {
-        if (anim == null || rb == null) return;
+        if (!enableAnimatorUpdates || anim == null || rb == null) return;
 
         Vector3 horizontalVel = new Vector3(rb.velocity.x, 0f, rb.velocity.z);
         float actualSpeed = horizontalVel.magnitude;
-        float normalized = Mathf.Clamp01(actualSpeed / Mathf.Max(0.0001f, speed));
+        float maxReferenceSpeed = Mathf.Max(0.0001f, Mathf.Max(walkSpeed, sprintSpeed));
+        float normalized = Mathf.Clamp01(actualSpeed / maxReferenceSpeed);
 
         // choose which float param exists
         string usedSpeed = HasFloatParameter(anim, speedFloat) ? speedFloat
@@ -253,29 +335,34 @@ public class PlayerMovement : MonoBehaviour
         if (a != null && HasBoolParameter(a, name)) a.SetBool(name, value);
     }
 
-    // Animator IK (fix method name & safety)
-    void OnAnimatorIK(int layerIndex)
+    Camera GetActiveCamera()
     {
-        if (anim == null) return;
-        // simple left foot IK example: only run if clip uses IK positions and a foot ray hits ground
-        if (bodyCollider == null) return;
-
-        Vector3 leftFootPos = anim.GetIKPosition(AvatarIKGoal.LeftFoot);
-        Ray ray = new Ray(leftFootPos + Vector3.up * 0.3f, Vector3.down);
-        if (Physics.Raycast(ray, out RaycastHit hit, 1f + distanceToGround, groundLayers))
-        {
-            anim.SetIKPositionWeight(AvatarIKGoal.LeftFoot, 1f);
-            anim.SetIKRotationWeight(AvatarIKGoal.LeftFoot, 1f);
-            anim.SetIKPosition(AvatarIKGoal.LeftFoot, hit.point + Vector3.up * distanceToGround);
-            Quaternion footRot = Quaternion.FromToRotation(Vector3.up, hit.normal) * transform.rotation;
-            anim.SetIKRotation(AvatarIKGoal.LeftFoot, footRot);
-        }
-        else
-        {
-            anim.SetIKPositionWeight(AvatarIKGoal.LeftFoot, 0f);
-            anim.SetIKRotationWeight(AvatarIKGoal.LeftFoot, 0f);
-        }
+        return referenceCamera != null ? referenceCamera : Camera.main;
     }
+
+    // Animator IK (fix method name & safety)
+    // void OnAnimatorIK(int layerIndex)
+    // {
+    //     if (anim == null) return;
+    //     // simple left foot IK example: only run if clip uses IK positions and a foot ray hits ground
+    //     if (bodyCollider == null) return;
+
+    //     Vector3 leftFootPos = anim.GetIKPosition(AvatarIKGoal.LeftFoot);
+    //     Ray ray = new Ray(leftFootPos + Vector3.up * 0.3f, Vector3.down);
+    //     if (Physics.Raycast(ray, out RaycastHit hit, 1f + distanceToGround, groundLayers))
+    //     {
+    //         anim.SetIKPositionWeight(AvatarIKGoal.LeftFoot, 1f);
+    //         anim.SetIKRotationWeight(AvatarIKGoal.LeftFoot, 1f);
+    //         anim.SetIKPosition(AvatarIKGoal.LeftFoot, hit.point + Vector3.up * distanceToGround);
+    //         Quaternion footRot = Quaternion.FromToRotation(Vector3.up, hit.normal) * transform.rotation;
+    //         anim.SetIKRotation(AvatarIKGoal.LeftFoot, footRot);
+    //     }
+    //     else
+    //     {
+    //         anim.SetIKPositionWeight(AvatarIKGoal.LeftFoot, 0f);
+    //         anim.SetIKRotationWeight(AvatarIKGoal.LeftFoot, 0f);
+    //     }
+    // }
 
     void OnDrawGizmosSelected()
     {
