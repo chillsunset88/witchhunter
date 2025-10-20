@@ -1,11 +1,36 @@
+using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
 /// Menangani combo slash katana menggunakan parameter float Animator (default: "slash.").
-/// Menekan Fire1 akan menaikkan nilai combo dari 1..maxComboStep, lalu reset ke 0 setelah jeda.
+/// Input yang masuk akan dimasukkan ke queue dan dieksekusi berurutan mengikuti durasi tiap animasi,
+/// sehingga perpindahan socket (hand/back) tetap sinkron dengan clip yang sedang dimainkan.
 /// </summary>
 public class KatanaHandler : MonoBehaviour
 {
+    public enum AttachmentAction
+    {
+        None,
+        AttachToHand,
+        AttachToBack
+    }
+
+    [System.Serializable]
+    public class SlashStepDefinition
+    {
+        [Tooltip("Nama referensi opsional untuk step ini (hanya untuk memudahkan inspector).")]
+        public string name = "Slash";
+        [Min(1), Tooltip("Nilai float yang akan dikirim ke Animator untuk step ini.")]
+        public int comboValue = 1;
+        [Min(0f), Tooltip("Berapa lama (detik) nilai combo ditahan sebelum step berikutnya dijalankan.")]
+        public float holdDuration = 0.7f;
+        [Tooltip("Aksi socket ketika step dimulai.")]
+        public AttachmentAction onEnterAttachment = AttachmentAction.AttachToHand;
+        [Tooltip("Aksi socket ketika step selesai.")]
+        public AttachmentAction onExitAttachment = AttachmentAction.None;
+    }
+
     [Header("References")]
     public Transform katana;          // drag 'sword'
     public Transform backSocket;      // drag KatanaBackSocket
@@ -15,10 +40,14 @@ public class KatanaHandler : MonoBehaviour
     [Header("Animator Combo Settings")]
     [Tooltip("Nama parameter float pada Animator yang mengontrol state combo.")]
     public string slashFloatName = "slash.";
-    [Tooltip("Jumlah langkah combo maksimum (misal 3 untuk Slash1->Slash3).")]
-    [Min(1)] public int maxComboStep = 3;
-    [Tooltip("Waktu toleransi antar input sebelum combo di-reset (detik).")]
-    public float comboResetDelay = 1f;
+    [Tooltip("Langkah combo yang tersedia. Isi sesuai jumlah animasi (slash, slash1, slash2, dst).")]
+    public SlashStepDefinition[] slashSteps = new SlashStepDefinition[3];
+    [Tooltip("Waktu toleransi input baru setelah step terakhir sebelum combo dianggap selesai.")]
+    public float comboResetDelay = 0.75f;
+
+    [Header("Combo Finish Behaviour")]
+    [Tooltip("Kembalikan katana ke punggung otomatis ketika combo benar-benar selesai.")]
+    public bool returnToBackWhenFinished = true;
 
     [Header("Cursor Control")]
     [Tooltip("Lock cursor ke jendela game saat script aktif.")]
@@ -36,9 +65,31 @@ public class KatanaHandler : MonoBehaviour
     [Tooltip("Normal bidang tempat kursor diproyeksikan (default: Vector3.up).")]
     public Vector3 planeNormal = Vector3.up;
 
+    readonly Queue<SlashStepDefinition> slashQueue = new Queue<SlashStepDefinition>();
+
+    Coroutine comboRoutine;
     int currentComboStep;
-    float lastAttackTime;
+    int highestRequestedStep;
     bool comboActive;
+
+    public bool IsComboActive => comboActive;
+
+    void OnValidate()
+    {
+        if (slashSteps == null) return;
+
+        for (int i = 0; i < slashSteps.Length; i++)
+        {
+            if (slashSteps[i] == null)
+                slashSteps[i] = new SlashStepDefinition();
+
+            if (slashSteps[i].comboValue <= 0)
+                slashSteps[i].comboValue = i + 1;
+
+            if (string.IsNullOrEmpty(slashSteps[i].name))
+                slashSteps[i].name = $"Slash {i + 1}";
+        }
+    }
 
     void OnEnable()
     {
@@ -48,6 +99,7 @@ public class KatanaHandler : MonoBehaviour
     void OnDisable()
     {
         ApplyCursorState(false);
+        ResetCombo();
     }
 
     void OnApplicationFocus(bool hasFocus)
@@ -60,45 +112,116 @@ public class KatanaHandler : MonoBehaviour
     {
         if (Input.GetButtonDown("Fire1"))
         {
-            RegisterSlashInput();
+            QueueSlashInput();
         }
 
         if (comboActive && faceCursorWhileSlashing)
         {
             FaceTowardsCursor(false);
         }
-
-        if (comboActive && Time.time - lastAttackTime >= comboResetDelay)
-        {
-            ResetCombo();
-        }
     }
 
-    void RegisterSlashInput()
+    void QueueSlashInput()
     {
-        if (animator == null) return;
-
-        lastAttackTime = Time.time;
-        currentComboStep = Mathf.Clamp(currentComboStep + 1, 1, maxComboStep);
-        animator.SetFloat(slashFloatName, currentComboStep);
-
-        if (!comboActive)
+        if (animator == null)
         {
-            AttachToHand();
+            Debug.LogWarning("KatanaHandler: Animator belum diisi, combo tidak dapat diproses.", this);
+            return;
+        }
+
+        if (slashSteps == null || slashSteps.Length == 0)
+        {
+            Debug.LogWarning("KatanaHandler: slashSteps kosong. Isi daftar step di inspector.", this);
+            return;
+        }
+
+        int baseStep = Mathf.Max(currentComboStep, highestRequestedStep);
+        int proposedStep = Mathf.Clamp(baseStep + 1, 1, slashSteps.Length);
+        SlashStepDefinition definition = slashSteps[proposedStep - 1];
+        slashQueue.Enqueue(definition);
+        highestRequestedStep = proposedStep;
+
+        bool startingCombo = comboRoutine == null;
+        if (startingCombo)
+        {
             comboActive = true;
+            comboRoutine = StartCoroutine(ProcessSlashQueue());
             if (faceCursorWhileSlashing)
                 FaceTowardsCursor(true);
         }
     }
 
-    public void ResetCombo()
+    IEnumerator ProcessSlashQueue()
     {
+        while (true)
+        {
+            if (slashQueue.Count == 0)
+            {
+                float waitTimer = 0f;
+                while (slashQueue.Count == 0 && waitTimer < comboResetDelay)
+                {
+                    waitTimer += Time.deltaTime;
+                    yield return null;
+                }
+
+                if (slashQueue.Count == 0)
+                {
+                    break;
+                }
+            }
+
+            SlashStepDefinition step = slashQueue.Dequeue();
+            currentComboStep = step.comboValue;
+            highestRequestedStep = Mathf.Max(highestRequestedStep, currentComboStep);
+
+            ExecuteAttachmentAction(step.onEnterAttachment);
+
+            if (animator != null)
+                animator.SetFloat(slashFloatName, currentComboStep);
+
+            float duration = Mathf.Max(0f, step.holdDuration);
+            float timer = 0f;
+            while (timer < duration)
+            {
+                timer += Time.deltaTime;
+                yield return null;
+            }
+
+            ExecuteAttachmentAction(step.onExitAttachment);
+        }
+
         currentComboStep = 0;
-        comboActive = false;
+        highestRequestedStep = 0;
+        slashQueue.Clear();
+
         if (animator != null)
             animator.SetFloat(slashFloatName, 0f);
 
-        AttachToBack();
+        comboRoutine = null;
+        comboActive = false;
+
+        if (returnToBackWhenFinished)
+            AttachToBack();
+    }
+
+    public void ResetCombo()
+    {
+        if (comboRoutine != null)
+        {
+            StopCoroutine(comboRoutine);
+            comboRoutine = null;
+        }
+
+        slashQueue.Clear();
+        currentComboStep = 0;
+        highestRequestedStep = 0;
+        comboActive = false;
+
+        if (animator != null)
+            animator.SetFloat(slashFloatName, 0f);
+
+        if (returnToBackWhenFinished)
+            AttachToBack();
     }
 
     public void AttachToHand()
@@ -115,6 +238,19 @@ public class KatanaHandler : MonoBehaviour
         katana.SetParent(backSocket);
         katana.localPosition = Vector3.zero;
         katana.localRotation = Quaternion.identity;
+    }
+
+    void ExecuteAttachmentAction(AttachmentAction action)
+    {
+        switch (action)
+        {
+            case AttachmentAction.AttachToHand:
+                AttachToHand();
+                break;
+            case AttachmentAction.AttachToBack:
+                AttachToBack();
+                break;
+        }
     }
 
     void ApplyCursorState(bool shouldLock)
@@ -164,7 +300,7 @@ public class KatanaHandler : MonoBehaviour
     /// </summary>
     public void OnSlashAnimationComplete()
     {
-        if (!comboActive)
+        if (!comboActive && returnToBackWhenFinished)
         {
             AttachToBack();
         }
@@ -177,5 +313,4 @@ public class KatanaHandler : MonoBehaviour
     //     transform.position = newPosition;
     //     transform.rotation = animator.rootRotation;
     // }
-
 }
